@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/Applications/Shotgun.app/Contents/Frameworks/Python/bin/python
 
 import imp
 import logging
@@ -7,6 +7,7 @@ import os
 import traceback
 import sys
 import urllib
+from os.path import expanduser
 
 # Include our own Python API from the included submodule
 PYTHON_API_PATH = os.path.join(os.path.dirname(__file__), 'python-api')
@@ -25,8 +26,19 @@ class Config(object):
     """This object should hold the config options for the AMI engine."""
 
     def getLogPath(self):
-        # TODO: This should be in a config file
-        return '/var/log/ShotgunAMIEngine'
+		# TODO: This should be in a config file
+		#return '/var/log/ShotgunAMIEngine'
+
+		# This was modified to move the log files to a place where permissions are more flexible...
+
+		logfile_path = "Library/Logs/ShotgunAMIEngine"
+		home = expanduser("~")
+		logfile_path = os.path.join(home,logfile_path)
+
+		if not os.path.exists(logfile_path) :		# Create logfile directory is it does not exist
+			os.makedirs(logfile_path)
+
+		return logfile_path
 
     def getDefaultLogFile(self):
         return os.path.join(self.getLogPath(), 'ami_engine.log')
@@ -49,11 +61,11 @@ class Config(object):
 
     def getShotgunURL(self):
         # TODO: This should be in a config file
-        return 'https://my_site.shotgunstudio.com'
+        return 'https://wba.shotgunstudio.com'
 
     def getDefaultAuth(self):
         # TODO: This should be in a config file
-        return ('script_name', 'script_key')
+        return ('ShotgunAMIEngine', '')
 
     def getActionAuth(self, action):
         """

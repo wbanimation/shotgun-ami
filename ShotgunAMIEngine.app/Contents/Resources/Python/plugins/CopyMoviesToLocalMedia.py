@@ -1,52 +1,32 @@
 #!/Applications/ShotgunAMIEngine.app/Contents/Frameworks/Python/bin/python
 
+import sys
+import os
+import subprocess
+import time
+from PySide import QtGui, QtCore
+from shotgun_api3 import Shotgun
+
 app_name = "CopyMoviesToLocalMedia"
 app_version = "0.1.73"
 
-debug = True
+VALID_MOVIE_EXTENSIONS = ["mov", "mp4", "avi", "mxf"]
+VALID_ENTITY_TYPES = ("Sequence", "Playlist", "Version", "PublishedFile")
 
-import sys
-import os
-import shutil
-import getpass
-import socket
-import urllib
-import logging as logger
-import threading
-import subprocess
-import re
-import time
-import webbrowser
-
-import copy
-from datetime import datetime
-from PySide import QtGui, QtCore
-from shotgun_api3 import Shotgun
-from vendors import six
-
-movie_extensions = ["mov", "mp4", "avi", "mxf"]
-
-#    Project configuration
-"""
-All of this stuff should really be in a config file
-"""
+# All of this stuff should really be in a config file
 server_path = ""
 script_name = ""
 script_key = ""
 
-# Log file
-logfile = os.path.dirname(sys.argv[0]) + "/CopyMoviesToLocalMedia.log"
-
-
 # GUI colors
 gui_bg_color = QtGui.QColor(50, 50, 50)
-label_bg_color = QtGui.QColor(200, 200, 200)
+# label_bg_color = QtGui.QColor(200, 200, 200)
 white_text = QtGui.QPalette()
 white_text.setColor(QtGui.QPalette.Foreground, QtCore.Qt.white)
-red_text = QtGui.QPalette()
-red_text.setColor(QtGui.QPalette.Foreground, QtCore.Qt.red)
-ltgray_text = QtGui.QPalette()
-ltgray_text.setColor(QtGui.QPalette.Foreground, QtCore.Qt.lightGray)
+# red_text = QtGui.QPalette()
+# red_text.setColor(QtGui.QPalette.Foreground, QtCore.Qt.red)
+# ltgray_text = QtGui.QPalette()
+# ltgray_text.setColor(QtGui.QPalette.Foreground, QtCore.Qt.lightGray)
 blue_text = QtGui.QPalette()
 blue_text.setColor(QtGui.QPalette.Foreground, QtGui.QColor(60, 160, 250))
 
@@ -57,252 +37,50 @@ messageBox_palette.setColor(QtGui.QPalette.WindowText, QtCore.Qt.white)
 
 big_font = QtGui.QFont()
 big_font.setPointSize(18)  # Font for title
-med_font = QtGui.QFont()
-med_font.setPointSize(13)  # Font for message
+# med_font = QtGui.QFont()
+# med_font.setPointSize(13)  # Font for message
 normal_font = QtGui.QFont()
 normal_font.setPointSize(11)  # Font for all text
-small_font = QtGui.QFont()
-small_font.setPointSize(10)
+# small_font = QtGui.QFont()
+# small_font.setPointSize(10)
 
 # Folder paths
-production_path = os.path.join(os.sep + "Volumes", "Production", "post", "jobs")
+production_jobs_path = os.path.join(os.sep + "Volumes", "Production", "post", "jobs")
 local_path = os.path.join(os.sep + "Volumes", "jobs")
 
 # Look for Mounted Volumes
 missing_volume = False
 missing_volumes = []
 
-if debug:
-    print("\nChecking for mounted Volumes...\n")
-
-if not os.path.isdir(production_path):
+if not os.path.isdir(production_jobs_path):
     found_production_path = False
     missing_volume = True
     missing_volumes.append("Production (speedy)")
-    if debug:
-        print(
-            " WARNING! No Production Volume Detected, Disabling Production Copy Option..."
-        )
 else:
-    if debug:
-        print(" Production Volume Detected...")
     found_production_path = True
 
 if not os.path.isdir(local_path):
     found_local_path = False
     missing_volume = True
     missing_volumes.append("Local")
-    if debug:
-        print(" WARNING! No Local Volume Detected, Disabling Local Copy Option...\n")
 else:
-    if debug:
-        print(" Local Volume Detected...")
     found_local_path = True
-
-if debug:
-    if not missing_volume:
-        print("\n   ALL VOLUMES ARE MOUNTED!")
-    if debug:
-        print("-" * 80)
-
-# Get Shotgun connection
-sg = Shotgun(server_path, script_name, script_key)
 
 
 # ----------------------------------------------
-# Required logging sub
+# Entrypoint for this AMI
 # ----------------------------------------------
 def process_action(sg, logger, params):
     logger.info(params)
-
-
-# ----------------------------------------------
-# Generic Shotgun Exception Class
-# ----------------------------------------------
-class ShotgunException(Exception):
-    pass
-
-
-# ----------------------------------------------
-# Set up logging
-# ----------------------------------------------
-def init_log(filename="version_packager.log"):
-    try:
-        logger.basicConfig(
-            level=logger.DEBUG,
-            format="%(asctime)s %(levelname)-8s %(message)s",
-            datefmt="%Y-%b-%d %H:%M:%s",
-            filename=filename,
-            filemode="w+",
-        )
-    except IOError as e:
-        raise ShotgunException("Unable to open logfile for writing: %s" % e)
-    logger.info("Export Notes logging started.")
-    return logger
-
-
-# ----------------------------------------------
-# ShotgunAction Class to manage ActionMenuItem call
-# ----------------------------------------------
-class ShotgunAction:
-    def __init__(self, url):
-        self.logger = self._init_log(logfile)
-        self.url = url
-        self.protocol, self.action, self.params = self._parse_url()
-
-        # entity type that the page was displaying
-        self.entity_type = self.params["entity_type"]
-
-        # Project info (if the ActionMenuItem was launched from a page not belonging
-        # to a Project (Global Page, My Page, etc.), this will be blank
-        if "project_id" in self.params:
-            self.project = {
-                "id": int(self.params["project_id"]),
-                "name": self.params["project_name"],
-            }
-        else:
-            self.project = None
-
-        # Internal column names currently displayed on the page
-        self.columns = self.params["cols"]
-
-        # Human readable names of the columns currently displayed on the page
-        self.column_display_names = self.params["column_display_names"]
-
-        # All ids of the entities returned by the query (not just those visible on the page)
-        self.ids = []
-        if len(self.params["ids"]) > 0:
-            ids = self.params["ids"].split(",")
-            self.ids = [int(id) for id in ids]
-
-        # All ids of the entities returned by the query in filter format ready
-        # to use in a find() query
-        self.ids_filter = self._convert_ids_to_filter(self.ids)
-
-        # ids of entities that were currently selected
-        self.selected_ids = []
-        if len(self.params["selected_ids"]) > 0:
-            sids = self.params["selected_ids"].split(",")
-            self.selected_ids = [int(id) for id in sids]
-
-        # All selected ids of the entities returned by the query in filter format ready
-        # to use in a find() query
-        self.selected_ids_filter = self._convert_ids_to_filter(self.selected_ids)
-
-        # sort values for the page
-        # (we don't allow no sort anymore, but not sure if there's legacy here)
-        if "sort_column" in self.params:
-            self.sort = {
-                "column": self.params["sort_column"],
-                "direction": self.params["sort_direction"],
-            }
-        else:
-            self.sort = None
-
-        # title of the page
-        self.title = self.params["title"]
-
-        # user info who launched the ActionMenuItem
-        self.user = {"id": self.params["user_id"], "login": self.params["user_login"]}
-
-        # session_uuid
-        self.session_uuid = self.params["session_uuid"]
-
-    # ----------------------------------------------
-    # Set up logging
-    # ----------------------------------------------
-    def _init_log(self, filename="shotgun_action.log"):
-        try:
-            logger.basicConfig(
-                level=logger.DEBUG,
-                format="%(asctime)s %(levelname)-8s %(message)s",
-                datefmt="%Y-%b-%d %H:%M:%S",
-                filename=filename,
-                filemode="w+",
-            )
-        except IOError as e:
-            raise ShotgunActionException("Unable to open logfile for writing: %s" % e)
-        logger.info("ShotgunAction logging started.")
-        return logger
-
-    # ----------------------------------------------
-    # Parse ActionMenuItem call into protocol, action and params
-    # ----------------------------------------------
-    def _parse_url(self):
-        logger.info("Parsing full url received: %s" % self.url)
-
-        # get the protocol used
-        protocol, path = self.url.split(":", 1)
-        logger.info("protocol: %s" % protocol)
-
-        # extract the action
-        action, params = path.split("?", 1)
-        action = action.strip("/")
-        logger.info("action: %s" % action)
-
-        # extract the parameters
-        # 'column_display_names' and 'cols' occurs once for each column displayed so we store it as a list
-        params = params.split("&")
-        p = {"column_display_names": [], "cols": []}
-        for arg in params:
-            try:
-                key, value = map(urllib.unquote, arg.split("=", 1))
-                if key == "column_display_names" or key == "cols":
-                    p[key].append(value)
-                else:
-                    p[key] = value
-            except Exception as e:
-                if debug:
-                    print(" WARNING!: Upack/Split failed...: %s" % e)
-
-        params = p
-        logger.info("params: %s" % params)
-        return (protocol, action, params)
-
-    # ----------------------------------------------
-    # Convert IDs to filter format to us in find() queries
-    # ----------------------------------------------
-    def _convert_ids_to_filter(self, ids):
-        filter = []
-        for id in ids:
-            filter.append(["id", "is", id])
-        logger.debug("parsed ids into: %s" % filter)
-        return filter
-
-
-# ----------------------------------------------
-# Extract Attachment id from entity field
-# ----------------------------------------------
-def extract_attachment_id(attachment):
-    # extract the Attachment id from the url location
-    #    attachment_id = attachment['url'].rsplit('/',1)[1]
-    attachment_id = attachment["id"]
-
-    try:
-        attachment_id = int(attachment_id)
-    except ValueError:
-        # not an integer.
-        return None
-
-    return attachment_id
-
-
-"""
--------------------------------------------------------------------------------
-All of the above stuff is needed to process the input from the AMI
-"""
+    main(sg, logger, params)
 
 
 class progressGUI(QtGui.QWidget):
-
-    messageBoxSignal = QtCore.Signal(str, str)
-
-    def __init__(self):
+    def __init__(self, worker):
         QtGui.QWidget.__init__(self)
+        self.worker = worker
 
-        self.messageBoxSignal.connect(self.messageBox)
-
-        big_font = QtGui.QFont()  #
+        big_font = QtGui.QFont()
         big_font.setPointSize(11)  # Font for title
         big_font.setBold(True)
 
@@ -320,6 +98,7 @@ class progressGUI(QtGui.QWidget):
         self.task_label.setAlignment(QtCore.Qt.AlignLeft)
         self.task_label.setFont(big_font)
         self.task_label.setPalette(white_text)
+
         self.doing1_label = QtGui.QLabel(" ")
         self.doing1_label.setAlignment(QtCore.Qt.AlignLeft)
         self.doing1_label.setFont(normal_font)
@@ -330,6 +109,7 @@ class progressGUI(QtGui.QWidget):
         self.doing2_label.setPalette(white_text)
         self.progress_bar = QtGui.QProgressBar()
         self.progress_bar.setAlignment(QtCore.Qt.AlignCenter)
+        self.progress_bar.setValue(0)
         self.app_version_label = QtGui.QLabel("Version " + app_version)
         self.app_version_label.setAlignment(QtCore.Qt.AlignLeft)
         self.app_version_label.setFont(normal_font)
@@ -351,6 +131,12 @@ class progressGUI(QtGui.QWidget):
         main_box.addWidget(self.progress_bar)
         main_box.addLayout(button_box)
 
+        self.worker.update_progress_text.connect(self.setDialogText)
+        self.worker.update_progress_bar.connect(self.set_progress)
+        self.worker.messageBoxSignal.connect(self.messageBox)
+        self.worker.progress_bar_max.connect(self.setMaximum)
+        self.worker.worker_done.connect(self.closeEvent)
+
         self.setLayout(main_box)
         self.show
 
@@ -362,13 +148,10 @@ class progressGUI(QtGui.QWidget):
         self.doing1_label.setText(doing1)
         self.doing2_label.setText(doing2)
 
-    def setProgress(self, value):
+    def set_progress(self, value):
         self.progress_bar.setValue(value)
 
     def closeEvent(self):
-        if debug:
-            print("-" * 80)
-            print("\n QUITING\n")
         os._exit(0)
 
     def messageBox(self, message_title, message):
@@ -386,20 +169,30 @@ class progressGUI(QtGui.QWidget):
         return
 
 
-class CopyProductionMediaLocalWorkThread(threading.Thread):
-    def __init__(self, sg, sa, progress_window):
-        threading.Thread.__init__(self)
+class CopyProductionMediaLocalWorkThread(QtCore.QThread):
+
+    update_progress_text = QtCore.Signal(str, str, str)
+    update_progress_bar = QtCore.Signal(int)
+    messageBoxSignal = QtCore.Signal(str, str)
+    progress_bar_max = QtCore.Signal(int)
+    worker_done = QtCore.Signal()
+
+    def __init__(self, sg, params, logger, parent=None):
+        super(CopyProductionMediaLocalWorkThread, self).__init__(parent)
 
         self.sg = sg
-        self.sa = sa
-        self.progress_window = progress_window
+        self.params = params
+        self.logger = logger
+        # self.progress_window = progress_window
+
+    # def update_progress_text(self, line1, line2="", line3=""):
+    #     self.logger.info("%s %s %s" % (line1, line2, line3))
+    #     self.progress_window.setDialogText(line1, line2, line3)
 
     def run(self):
-        global selected_version_ids
-
         warning_message = False
-        progress_chunks = 0
-        all_entities = []
+        # progress_chunks = 0
+        # all_entities = []
 
         sequence_tasks = [
             "Storyboard",
@@ -413,309 +206,199 @@ class CopyProductionMediaLocalWorkThread(threading.Thread):
         ]
         found_tasks = []
 
-        if self.sa.params["entity_type"] in ("Playlist", "Version", "Sequence"):
-
-            if self.sa.params["entity_type"] == "Sequence":
-                selected_ids = self.sa.params["selected_ids"]
-
-                if debug:
-                    print(" selected_ids: ", selected_ids)
-
-                if len(selected_ids) > 0:
-                    selected_ids = [selected_ids]
-
-                selected_filter = []
-                for sequence_id in selected_ids:
-                    version_filter = ["id", "is", int(sequence_id)]
-                    selected_filter.append(version_filter)
-
-                sg_sequences = self.sg.find(
-                    "Sequence", selected_filter, ["code"], filter_operator="any"
-                )
-
-                additional_filter_presets = [
-                    {"preset_name": "LATEST", "latest_by": "ENTITIES_CREATED_AT"}
-                ]
-
-                doing = "Sequence " + sg_sequences[0]["code"]
-                doing1 = " Getting Versions For Tasks: " + ", ".join(sequence_tasks)
-                doing2 = " "
-                self.progress_window.setDialogText(doing, doing1, doing2)
-
-                entities = []
-                for task in sequence_tasks:
-                    filters = [
-                        ["sg_task.Task.content", "is", task],
-                        [
-                            "entity.Shot.sg_sequence",
-                            "is",
-                            {"type": "Sequence", "id": int(selected_ids[0])},
-                        ],
-                    ]
-
-                    task_entities = self.sg.find(
-                        "Version",
-                        filters,
-                        [
-                            "code",
-                            "project",
-                            "id",
-                            "sg_production_path",
-                            "sg_path_to_movie",
-                        ],
-                        additional_filter_presets=additional_filter_presets,
-                    )
-
-                    if len(task_entities) > 0:
-                        entities = entities + task_entities
-                        found_tasks.append(task)
-
-            else:
-                self.progress_window.setDialogText(
-                    "Doing else. Version Ids: %s" % selected_version_ids
-                )
-                time.sleep(2)
-                selected_filter = []
-                selected_version_ids_list = []
-
-                if "," in selected_version_ids:
-                    selected_version_ids = selected_version_ids.split(",")
-
-                for version_id in selected_version_ids:
-                    version_filter = ["id", "is", int(version_id)]
-                    selected_filter.append(version_filter)
-
-                entities = self.sg.find(
-                    "Version",
-                    selected_filter,
-                    ["project", "id", "sg_production_path", "sg_path_to_movie"],
-                    filter_operator="any",
-                )
-                self.progress_window.setDialogText("Found %s Versions" % len(entities))
-                time.sleep(2)
-
-        elif self.sa.params["entity_type"] == "PublishedFile":
-            entities = self.sg.find(
-                "PublishedFile",
-                self.sa.selected_ids_filter,
-                ["project", "id", "path"],
-                filter_operator="any",
+        # ensure we have a valid entity type. If not warn and return.
+        if self.params["entity_type"] not in VALID_ENTITY_TYPES:
+            self.update_progress_text.emit(
+                "%s is not a valid entity type for this AMI. \n\nValid entity types are: %s"
+                % (self.params["entity_type"], VALID_ENTITY_TYPES),
+                "",
+                "",
             )
-
-        if debug:
-            print(" entities:", entities)
-
-        if len(entities) == 0:
-            doing = "Found no Versions..."
-            doing1 = "  "
-            doing2 = "  "
-            self.progress_window.setDialogText(doing, doing1, doing2)
             time.sleep(2)
             return False
 
-        else:
+        # set the progress window dialog
+        self.update_progress_text.emit(
+            "Getting Versions for %s IDs: %s"
+            % (
+                self.params["entity_type"],
+                self.params["selected_ids"],
+            ),
+            "",
+            "",
+        )
+        version_fields = [
+            "id",
+            "code",
+            "project",
+            "sg_path_to_movie",
+            "sg_path_to_local_media",
+            "sg_task",
+        ]
+        try:
+            if self.params["entity_type"] == "Sequence":
+                filters = [
+                    ["sg_task.Task.content", "in", sequence_tasks],
+                    [
+                        "entity.Shot.sg_sequence.Sequence.id",
+                        "in",
+                        self.params["selected_ids"],
+                    ],
+                ]
+                sg_versions = self.sg.find(
+                    "Version",
+                    filters,
+                    version_fields,
+                    additional_filter_presets={
+                        "preset_name": "LATEST",
+                        "latest_by": "ENTITIES_CREATED_AT",
+                    },
+                )
+                for v in sg_versions:
+                    if v["sg_task"] and v["sg_task"]["name"] not in found_tasks:
+                        found_tasks.append(v["sg_task"]["name"])
+            elif self.params["entity_type"] == "Playlist":
+                self.logger.info("Finding Versions from Playlist")
+                sg_versions = self.sg.find(
+                    "Version",
+                    [["playlists.Playlist.id", "in", self.params["selected_ids"]]],
+                    version_fields,
+                )
+            elif self.params["entity_type"] == "Version":
+                sg_versions = self.sg.find(
+                    "Version",
+                    [["id", "in", self.params["selected_ids"]]],
+                    version_fields,
+                )
+            elif self.params["entity_type"] == "PublishedFile":
+                sg_versions = self.sg.find(
+                    "Version",
+                    [
+                        [
+                            "published_files.PublishedFile.id",
+                            "in",
+                            self.params["selected_ids"],
+                        ]
+                    ],
+                    version_fields,
+                )
+        except Exception as e:
+            self.update_progress_text.emit("ERROR", str(e), "")
+            time.sleep(5)
 
-            # Pre scan entities to get progress total
-            total_progress = 0
+        self.update_progress_text.emit("Found %s Versions" % len(sg_versions), "", "")
+        time.sleep(2)
+        if not sg_versions:
+            return False
 
-            for e in entities:
-                total_progress += 1
+        # Pre scan sg_versions to get progress total
+        self.progress_bar_max.emit(len(sg_versions))
+        # self.progress_window.setMaximum(len(sg_versions))
+        self.logger.info("Set progress max to %s" % len(sg_versions))
 
-            self.progress_window.setMaximum(total_progress)
+        total_files = len(sg_versions)
+        current_count = 0
+        exists_count = 0
+        copied_files = 0
+        found_non_movie = False
 
-            progress = 0
+        for v in sg_versions:
+            current_count += 1
+            path_to_movie = v["sg_path_to_movie"]
+            path_to_local_media = v["sg_path_to_local_media"]
+            # TODO: check to ensure path values exist.
 
-            if debug:
-                print("Copying Files to Local Media...")
-                print("-" * 80)
-
-            copy_count = len(entities)
-            doing_count = 1
-            exists_count = 0
-            copied_files = 0
-            found_non_movie = False
-
-            doing = "Copying Files to Local Volume (%i of %i)" % (
-                doing_count,
-                copy_count,
+            line1 = "Copying Files to Local Volume (%i of %i)" % (
+                current_count,
+                total_files,
             )
+            line2 = "From: %s" % path_to_movie
+            line3 = "To: %s" % path_to_local_media
+            self.update_progress_text.emit(line1, line2, line3)
+            self.update_progress_bar.emit(current_count)
+            self.logger.info("set progress to %s" % current_count)
+            # QtGui.qApp.processEvents()
 
-            for e in entities:
+            try:
+                _, extension = path_to_movie.rsplit(".", 1)
+            except Exception as e:
+                message = (
+                    "WARNING!\n\nUnable to get extention from Path to Movie: %s \n\n%s"
+                    % (e, path_to_movie)
+                )
+                self.messageBoxSignal.emit("WARNING!", message)
+                warning_message = True
+                extension = None
 
-                if e["type"] == "Version":
-                    project, id, production_path, path_to_movie = (
-                        e["project"]["name"],
-                        e["id"],
-                        str(e["sg_production_path"]),
-                        str(e["sg_path_to_movie"]),
-                    )
+            # Check to see if file exists on Local Media first
+            # then make sure its a movie, we only want extensions from a set list
+            if os.path.exists(path_to_local_media):
+                exists_count += 1
+                continue
+            if extension not in VALID_MOVIE_EXTENSIONS:
+                found_non_movie = True
+                continue
+            # make sure file were are copying exists
+            if not os.path.exists(path_to_movie):
+                message = (
+                    "WARNING!\n\nPath to Movie does not exist!\n\n %s" % path_to_movie
+                )
+                self.messageBoxSignal.emit("WARNING!", message)
+                warning_message = True
+                continue
 
-                elif e["type"] == "PublishedFile":
-                    project, id, production_path = (
-                        e["project"]["name"],
-                        e["id"],
-                        str(e["path"]["local_path"]),
-                    )
-                    split_production_path = production_path.split("/", 4)
-                    path_to_movie = os.path.join(
-                        os.sep, split_production_path[1], split_production_path[4]
-                    )
-
-                if debug:
-                    print("production_path:", production_path)
-                    print("  path_to_movie:", path_to_movie)
-
-                progress += 1
-
+            # if the directory does not extist, create it
+            path_to_local_media_dir = os.path.dirname(path_to_local_media)
+            if not os.path.exists(path_to_local_media_dir):
                 try:
-                    minus_extension, extension = production_path.rsplit(".", 1)
+                    os.makedirs(path_to_local_media_dir)
                 except Exception as e:
                     message = (
-                        "WARNING!\n\nUnable to get extention from Production path: %s \n\n%s"
-                        % (e, production_path)
+                        "WARNING!\n\nCan't make Directory on Local Volume!\n\n%s" % e
                     )
-                    self.progress_window.messageBoxSignal.emit("WARNING!", message)
+                    self.messageBoxSignal.emit("WARNING!", message)
                     warning_message = True
-                    extension = None
+                    continue
 
-                # Check to see if file exists on Local Media first
-                # then make sure its a movie, we only want extensions from a set list
-                if not os.path.exists(path_to_movie) and extension in movie_extensions:
-                    doing = "Copying Files to Local Volume (%i of %i)" % (
-                        doing_count,
-                        copy_count,
-                    )
-                    doing1 = "       From: %s" % production_path
-                    doing2 = "         To: %s\n" % path_to_movie
-                    self.progress_window.setDialogText(doing, doing1, doing2)
-                    self.progress_window.setProgress(progress)
-                    QtGui.qApp.processEvents()
-                    path_to_movie_dir = path_to_movie.rsplit("/", 1)[0]
+            # finally, copy the file with custom code
+            try:
+                self.customCopyfile(path_to_movie, path_to_local_media)
+                copied_files += 1
+            except Exception as e:
+                message = "WARNING!\n\nCould not copy %s to %s\n\nError: %s" % (
+                    path_to_movie,
+                    path_to_local_media,
+                    e,
+                )
+                self.messageBoxSignal.emit("WARNING!", message)
+                warning_message = True
+                continue
 
-                    # make sure file were are copying exists
-                    if not os.path.exists(production_path):
-                        message = (
-                            "WARNING!\n\nProduction path does not exists!\n\n "
-                            + production_path
-                        )
-                        self.progress_window.messageBoxSignal.emit("WARNING!", message)
-                        warning_message = True
-                        if debug:
-                            print("   'production_path' not found: Skipping...")
-                        doing_count += 1
+        found_tasks_str = ""
+        if found_tasks:
+            found_tasks_str = "Found Version Tasks: %s" % ", ".join(found_tasks)
+        found_non_movie_str = ""
+        if found_non_movie:
+            found_non_movie_str = "Found non-movie media that was not copied."
 
-                    # if the directory does not extist, create it
-                    elif not os.path.exists(path_to_movie_dir):
-                        try:
-                            os.makedirs(path_to_movie_dir)
-                        except Exception as e:
-                            message = (
-                                "WARNING!\n\nCan't make Directory on Local Volume!\n\n%s"
-                                % e
-                            )
-                            self.progress_window.messageBoxSignal.emit(
-                                "WARNING!", message
-                            )
-                            warning_message = True
-                    # finally, copy the file with custom code
-                    try:
-                        self.customCopyfile(production_path, path_to_movie)
-                        doing_count += 1
-                        copied_files += 1
+        if not sg_versions and copied_files == 0:
+            headline = "Found No Media to Copy."
+        elif len(sg_versions) == exists_count:
+            headline = "All Versions already exist locally."
+        elif len(sg_versions) == copied_files:
+            headline = "All Versions copied Successfully."
+        elif found_non_movie:
+            headline = ""
+        else:
+            headline = "Some Versions already exist locally and were not re-copied"
 
-                    except Exception as e:
-                        message = (
-                            "WARNING!\n\nCould not copy "
-                            + production_path
-                            + " to "
-                            + path_to_movie
-                            + "\n\n%s" % e
-                        )
-                        self.progress_window.messageBoxSignal.emit("WARNING!", message)
-                        warning_message = True
-                        doing_count += 1
+        self.update_progress_text.emit(headline, found_tasks_str, found_non_movie_str)
+        time.sleep(2)
 
-                else:
-                    if debug:
-                        print("   file exisits: Skipping...")
-                    doing_count += 1
-                    if extension in movie_extensions:
-                        exists_count += 1
-                    else:
-                        found_non_movie = True
+        if not warning_message:
+            self.worker_done.emit()
 
-            if debug:
-                print("entities:", len(entities))
-                print("copied_files:", copied_files)
-                print("exists_count:", exists_count)
-                print("found_non_movie:", found_non_movie)
-
-            if len(entities) < 0 and copied_files == 0:
-                doing = "FoundNo Media to Copy..."
-                if len(found_tasks) > 0:
-                    doing1 = "  Found Version Tasks : " + ", ".join(found_tasks)
-                else:
-                    doing1 = " "
-                if found_non_movie:
-                    doing2 = "  Found Non-Movie Media. These Were Skipped..."
-                else:
-                    doing2 = "  "
-                self.progress_window.setDialogText(doing, doing1, doing2)
-                time.sleep(2)
-
-            elif len(entities) == exists_count:
-                doing = "All Version Alredy Exist on Local Media..."
-                if len(found_tasks) > 0:
-                    doing1 = "  Found Version Tasks : " + ", ".join(found_tasks)
-                else:
-                    doing1 = " "
-                if found_non_movie:
-                    doing2 = "  Found Non-Movie Media. These Were Skipped..."
-                else:
-                    doing2 = "  "
-                self.progress_window.setDialogText(doing, doing1, doing2)
-                time.sleep(2)
-
-            elif len(entities) == copied_files:
-
-                doing = "All Version Copied Successfully..."
-                if len(found_tasks) > 0:
-                    doing1 = "  Found Version Tasks : " + ", ".join(found_tasks)
-                else:
-                    doing1 = " "
-                if found_non_movie:
-                    doing2 = "  Found Non-Movie Media. These Were Skipped..."
-                else:
-                    doing2 = "  "
-                self.progress_window.setDialogText(doing, doing1, doing2)
-                time.sleep(2)
-
-            elif found_non_movie:
-
-                doing = "Found Non-Movie Media. These Were Skipped..."
-                if len(found_tasks) > 0:
-                    doing1 = "  Found Version Tasks : " + ", ".join(found_tasks)
-                else:
-                    doing1 = " "
-                doing2 = "  "
-                self.progress_window.setDialogText(doing, doing1, doing2)
-                time.sleep(2)
-
-            else:
-
-                doing = "Some Versions Alredy Existsed and Were Skipped..."
-                if len(found_tasks) > 0:
-                    doing1 = "  Found Version Tasks : " + ", ".join(found_tasks)
-                else:
-                    doing1 = " "
-                doing2 = "  "
-                self.progress_window.setDialogText(doing, doing1, doing2)
-                time.sleep(2)
-
-            if not warning_message:
-                self.progress_window.closeEvent()
-
-            return False
+        return False
 
     def customCopyfile(self, src, dst):
 
@@ -744,126 +427,56 @@ class CopyProductionMediaLocalWorkThread(threading.Thread):
                 pass
 
 
-def main():
-    if debug:
-        print("\n STARTING CopyProductionVersionLocal", app_version)
-        print("-" * 80)
+def main(sg, logger, params):
 
-    global selected_version_ids
+    app = QtGui.QApplication(sys.argv)
 
-    init_log(logfile)
+    if missing_volume:
+        message_title = "WARNING!"
+        message = (
+            "These required Volumes are not mounted...\n\n %s\n\nWould you like to try "
+            "and mount the missing Volume(s)?" % "\n".join(missing_volumes)
+        )
 
-    try:
-        sa = ShotgunAction(sys.argv[1])
-    # 	logger.info("Firing... %s" % (sys.argv[1]) )
-    except IndexError as e:
-        raise ShotgunException("Missing POST arguments")
+        msgBox = QtGui.QMessageBox()
+        msgBox.setWindowTitle(message_title)
+        msgBox.setStandardButtons(msgBox.Yes | msgBox.Cancel)
+        msgBox.setDefaultButton(msgBox.Yes)
+        msgBox.setText(message)
+        msgBox.setPalette(QtGui.QPalette(gui_bg_color))
+        msgBox.setAutoFillBackground(True)
+        msgBox.setFont(normal_font)
+        msgBox.setPalette(messageBox_palette)
+        msgBox.show()
+        msgBox.raise_()
+        returnval = msgBox.exec_()
 
-    # Check that the correct action is happening
-    if sa.action == "CopyMoviesToLocalMedia":
-        app = QtGui.QApplication(sys.argv)
-        selected_version_ids = []
+        if returnval == msgBox.Cancel:
+            os._exit(0)
+        else:
+            for mount_volume in missing_volumes:
+                if "Production" in mount_volume:
+                    command = """osascript -e 'mount volume "smb://speedy.wba.aoltw.net/Production"'"""
+                    p = subprocess.Popen(
+                        command,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                if "Local" in mount_volume:
+                    command = """osascript -e 'mount volume "jobs"'"""
+                    p = subprocess.Popen(
+                        command,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                p.communicate()  # now wait
 
-        if missing_volume:
-            message_title = "WARNING!"
-            message = (
-                "These required Volumes are not mounted...\n\n"
-                + "\n".join(missing_volumes)
-                + "\n\nWould you like me to try and mount the missing Volume(s)?"
-            )
+    worker = CopyProductionMediaLocalWorkThread(sg, params, logger)
+    dialog = progressGUI(worker)
+    dialog.show()
+    dialog.raise_()
+    dialog.worker.start()
 
-            msgBox = QtGui.QMessageBox()
-            msgBox.setWindowTitle(message_title)
-            msgBox.setStandardButtons(msgBox.Yes | msgBox.Cancel)
-            msgBox.setDefaultButton(msgBox.Yes)
-            msgBox.setText(message)
-            msgBox.setPalette(QtGui.QPalette(gui_bg_color))
-            msgBox.setAutoFillBackground(True)
-            msgBox.setFont(normal_font)
-            msgBox.setPalette(messageBox_palette)
-            msgBox.show()
-            msgBox.raise_()
-            returnval = msgBox.exec_()
-
-            if returnval == msgBox.Cancel:
-                os._exit(0)
-            else:
-                for mount_volume in missing_volumes:
-                    if "Production" in mount_volume:
-                        command = """osascript -e 'mount volume "smb://speedy.wba.aoltw.net/Production"'"""
-                        p = subprocess.Popen(
-                            command,
-                            shell=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                        )
-                    if "Local" in mount_volume:
-                        command = """osascript -e 'mount volume "jobs"'"""
-                        p = subprocess.Popen(
-                            command,
-                            shell=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                        )
-                    if debug:
-                        print("\n MOUNTING VOLUME: " + mount_volume)
-                    p.communicate()  # now wait
-
-        if "entity_type" in sa.params:
-            if sa.params["entity_type"] == "Playlist":
-                if debug:
-                    print(" GOT Playlist....")
-                if "selected_ids" in sa.params:
-                    selected_ids = sa.params["selected_ids"]
-                    try:
-                        selected_ids = selected_ids.split(",")
-                    except Exception:
-                        pass
-
-                    for playlist_id in selected_ids:
-                        sg_playlist = sg.find_one(
-                            "Playlist",
-                            [["id", "is", int(playlist_id)]],
-                            ["code", "sg_type", "sg_episode", "created_at"],
-                        )
-
-                        if sg_playlist == None:
-                            if debug:
-                                print("WARNING! Playlist disappeared...")
-                            continue
-                        if "sg_type" in sg_playlist.keys():
-                            playlist_type = sg_playlist["sg_type"]
-                        else:
-                            playlist_type = ""
-                        playlist_name = sg_playlist["code"]
-                        sg_playlist_versions = sg.find(
-                            "Version",
-                            [["playlists", "is", sg_playlist]],
-                            ["id", "code", "entity", "sg_episode", "sg_status_list"],
-                        )
-
-                        for sg_version in sg_playlist_versions:
-                            selected_version_ids.append(sg_version["id"])
-
-            if sa.params["entity_type"] == "Version":
-                if debug:
-                    print(" GOT Versions....")
-                selected_ids = sa.params["selected_ids"]
-
-                if "," in selected_ids:
-                    selected_version_ids = selected_ids.split(",")
-                elif isinstance(selected_ids, str):
-                    selected_version_ids.append(selected_ids)
-
-        dialog = progressGUI()
-        dialog.show()
-        dialog.raise_()
-
-        CopyProductionMediaLocalWorkThread(sg, sa, dialog).start()
-        sys.exit(app.exec_())
-
-    else:
-        raise ShotgunException("Unknown action... :%s" % sa.action)
-
-
-main()
+    sys.exit(app.exec_())

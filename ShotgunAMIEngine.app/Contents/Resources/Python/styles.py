@@ -26,3 +26,6 @@ normal_font = QtGui.QFont()
 normal_font.setPointSize(12)  # Font for all text
 # small_font = QtGui.QFont()
 # small_font.setPointSize(10)
+
+# WBA logo
+wba_icon = QtGui.QIcon("wba_logo.png")

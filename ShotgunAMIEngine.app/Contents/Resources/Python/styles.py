@@ -23,6 +23,6 @@ big_font.setPointSize(18)  # Font for title
 # med_font = QtGui.QFont()
 # med_font.setPointSize(13)  # Font for message
 normal_font = QtGui.QFont()
-normal_font.setPointSize(11)  # Font for all text
+normal_font.setPointSize(12)  # Font for all text
 # small_font = QtGui.QFont()
 # small_font.setPointSize(10)

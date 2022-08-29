@@ -2,11 +2,14 @@ from PySide import QtGui
 import styles
 
 
-def display(title, message, ok=True, cancel=True):
+def display(title, message, ok_only=False):
     msgBox = QtGui.QMessageBox()
     msgBox.setWindowTitle(title)
-    msgBox.setStandardButtons(msgBox.Yes | msgBox.Cancel)
-    msgBox.setDefaultButton(msgBox.Yes)
+    if not ok_only:
+        msgBox.setStandardButtons(msgBox.Yes | msgBox.Cancel)
+        msgBox.setDefaultButton(msgBox.Yes)
+    else:
+        msgBox.setStandardButtons(msgBox.Ok)
     msgBox.setText(message)
     msgBox.setPalette(QtGui.QPalette(styles.gui_bg_color))
     msgBox.setAutoFillBackground(True)

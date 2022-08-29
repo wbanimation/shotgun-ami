@@ -89,7 +89,7 @@ def check_volume_mounts(volumes, logger):
                     "The Volume %s still did not mount. Please ensure you're connected to the VPN.\n"
                     "Aborting, sorry." % volume
                 )
-                retval = message_box.display(title, message)
+                retval = message_box.display(title, message, ok_only=True)
                 return False
 
     logger.info("All required Volumes are mounted.")

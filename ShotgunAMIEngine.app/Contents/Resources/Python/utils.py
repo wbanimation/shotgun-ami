@@ -1,7 +1,6 @@
 import os
 import subprocess
-import message_box
-from PySide import QtGui, QtCore
+
 
 FILESERVERS = {
     "droid": {"path": "/Volumes/DROID", "mount": "smb://droid.wba.aoltw.net"},
@@ -26,6 +25,18 @@ def validate_volume_name(volume_name):
         )
 
 
+def get_volume_name_from_path(path):
+    if "production/post" in path.lower():
+        return "production"
+    if "droid3" in path.lower():
+        return "droid3"
+    if "droid2" in path.lower():
+        return "droid3"
+    # this is last because it exists in the above volume names
+    if "droid" in path.lower():
+        return "droid"
+
+
 def is_mounted(volume_name):
     volume_name = volume_name.lower()
     validate_volume_name(volume_name)
@@ -47,7 +58,7 @@ def mount_volume(volume_name):
     p.communicate()  # now wait
 
 
-def check_volume_mounts(volumes, logger):
+def check_missing_volume_mounts(volumes):
     """
     Checks all volumes are mounted. If user cancels or volumes don't get mounted
     correctly, we return False to indicate exit. Otherwise True and continue
@@ -60,37 +71,4 @@ def check_volume_mounts(volumes, logger):
     for volume in volumes:
         if not is_mounted(volume):
             missing_volumes.append(volume)
-
-    if missing_volumes:
-        logger.warning(
-            "The following required Volumes are not mounted: %s" % missing_volumes
-        )
-        title = "WARNING!"
-        message = (
-            "These required Volumes are not mounted...\n\n %s\n\nWould you like to try "
-            "and mount the missing Volume(s)?" % "\n".join(missing_volumes)
-        )
-        retval = message_box.display(title, message)
-        if retval == QtGui.QMessageBox.Cancel:
-            logger.warning("User decided to cancel. Exiting.")
-            return False
-        else:
-            for volume in missing_volumes:
-                logger.info("Attempting to mount Volume %s" % volume)
-                mount_volume(volume)
-        # validate they're mounted now
-        for volume in missing_volumes:
-            if not is_mounted(volume):
-                logger.error(
-                    "Volume %s did not mount despite our best attempts" % volume
-                )
-                title = "ERROR!"
-                message = (
-                    "The Volume %s still did not mount. Please ensure you're connected to the VPN.\n"
-                    "Aborting, sorry." % volume
-                )
-                retval = message_box.display(title, message, ok_only=True)
-                return False
-
-    logger.info("All required Volumes are mounted.")
-    return True
+    return missing_volumes

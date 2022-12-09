@@ -31,7 +31,7 @@ def get_volume_name_from_path(path):
     if "droid3" in path.lower():
         return "droid3"
     if "droid2" in path.lower():
-        return "droid3"
+        return "droid2"
     # this is last because it exists in the above volume names
     if "droid" in path.lower():
         return "droid"
